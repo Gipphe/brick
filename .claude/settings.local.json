@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cabal info *)",
+      "Bash(ghc-pkg list *)"
+    ]
+  }
+}

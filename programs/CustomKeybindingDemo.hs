@@ -124,15 +124,15 @@ drawUi st = [body]
                       ]
 
         -- Show info about whether the application is currently using
-        -- custom bindings loaded from an INI file.
+        -- custom bindings loaded from a YAML file.
         customBindingInfo =
             B.borderWithLabel (txt "Custom Bindings") $
             case st^.customBindingsPath of
                 Nothing ->
                     hLimit 40 $
-                    txtWrap $ "No custom bindings loaded. Create an INI file with a " <>
+                    txtWrap $ "No custom bindings loaded. Create a YAML file with a " <>
                               (Text.pack $ show sectionName) <>
-                              " section or use 'programs/custom_keys.ini'. " <>
+                              " section or use 'programs/custom_keys.yaml'. " <>
                               "Pass its path to this program on the command line."
                 Just f -> str "Loaded custom bindings from:" <=> str (show f)
 
@@ -163,31 +163,31 @@ main :: IO ()
 main = do
     args <- getArgs
 
-    -- If the command line specified the path to an INI file with custom
+    -- If the command line specified the path to a YAML file with custom
     -- bindings, attempt to load it.
     (customBindings, customFile) <- case args of
-        [iniFilePath] -> do
-            result <- K.keybindingsFromFile allKeyEvents sectionName iniFilePath
+        [yamlFilePath] -> do
+            result <- K.keybindingsFromFile allKeyEvents sectionName yamlFilePath
             case result of
                 -- A section was found and had zero more bindings.
                 Right (Just bindings) ->
-                    return (bindings, Just iniFilePath)
+                    return (bindings, Just yamlFilePath)
 
                 -- No section was found at all.
                 Right Nothing -> do
-                    putStrLn $ "Error: found no section " <> show sectionName <> " in " <> show iniFilePath
+                    putStrLn $ "Error: found no section " <> show sectionName <> " in " <> show yamlFilePath
                     exitFailure
 
-                -- There was some problem parsing the file as an INI
+                -- There was some problem parsing the file as a YAML
                 -- file.
                 Left e -> do
-                    putStrLn $ "Error reading keybindings file " <> show iniFilePath <> ": " <> e
+                    putStrLn $ "Error reading keybindings file " <> show yamlFilePath <> ": " <> e
                     exitFailure
 
         _ -> return ([], Nothing)
 
     -- Create a key config that includes the default bindings as well as
-    -- the custom bindings we loaded from the INI file, if any.
+    -- the custom bindings we loaded from the YAML file, if any.
     let kc = K.newKeyConfig allKeyEvents defaultBindings customBindings
 
     -- Before starting the application, check on whether any events have

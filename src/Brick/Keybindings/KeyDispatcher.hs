@@ -13,7 +13,7 @@
 --   the event) and a list of default key bindings.
 -- * Use the resulting data to create a 'KeyConfig' with 'newKeyConfig'.
 --   If desired, provide custom keybindings to 'newKeyConfig' from
---   within the program or load them from an INI file with routines like
+--   within the program or load them from a YAML file with routines like
 --   'Brick.Keybindings.Parse.keybindingsFromFile'.
 -- * Optionally check for configuration-wide keybinding collisions with
 --   'Brick.Keybindings.KeyConfig.keyEventMappings'.

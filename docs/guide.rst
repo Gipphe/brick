@@ -900,19 +900,22 @@ follows:
 * The application can save new customizations to files for later
   re-loading.
 
-Customizations are written in an INI-style file. Here's an example:
+Customizations are written in a YAML file. Here's an example:
 
-.. code:: ini
+.. code:: yaml
 
-   [default]
-   default.fg = blue
-   default.bg = black
+   default:
+     fg: blue
+     bg: black
 
-   [other]
-   someAttribute.fg = red
-   someAttribute.style = underline
-   otherAttribute.style = [underline, bold]
-   otherAttribute.inner.fg = white
+   other:
+     someAttribute:
+       fg: red
+       style: underline
+     otherAttribute:
+       style: "[underline, bold]"
+     otherAttribute.inner:
+       fg: white
 
 In the above example, the theme's *default attribute* -- the one that is
 used when no other attributes are used -- is customized. Its foreground
@@ -957,7 +960,7 @@ the theme with the user's customization file:
 
    main :: IO ()
    main = do
-       customizedTheme <- loadCustomizations "custom.ini" defaultTheme
+       customizedTheme <- loadCustomizations "custom.yaml" defaultTheme
 
 Now we have a customized theme based on ``defaultTheme``. The next step
 is to build an ``AttrMap`` from the theme:
@@ -968,7 +971,7 @@ is to build an ``AttrMap`` from the theme:
 
    main :: IO ()
    main = do
-       customizedTheme <- loadCustomizations "custom.ini" defaultTheme
+       customizedTheme <- loadCustomizations "custom.yaml" defaultTheme
        let mapping = themeToAttrMap customizedTheme
 
 The resulting ``AttrMap`` can then be returned by ``appAttrMap``
@@ -1692,7 +1695,7 @@ that uses the customizable keybindings API:
 |                     | desired, the           |    the input key event  |
 |                     | application can load   |    maps to an abstract  |
 |                     | user-defined custom    |    event.               |
-|                     | keybindings from an INI| #. If the dispatcher    |
+|                     | keybindings from a YAML| #. If the dispatcher    |
 |                     | file at startup to     |    finds a match, the   |
 |                     | override the           |    corresponding        |
 |                     | application's defaults.|    abstract event's key |
@@ -1732,11 +1735,11 @@ Suppose also that the application using the above key events has a
 feature that opens a window, and that ``CloseWindowEvent`` is used to
 close the window, while ``QuitEvent`` is used to quit the application.
 
-A user might then provide a custom INI file to rebind keys as follows::
+A user might then provide a custom YAML file to rebind keys as follows::
 
-   [keybindings]
-   quit = Esc
-   close-window = Esc
+   keybindings:
+     quit: Esc
+     close-window: Esc
 
 While this is a valid configuration for the user to provide, it would
 result in a keybinding collision for ``Esc`` since it is now bound

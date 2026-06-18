@@ -7,19 +7,21 @@ module Brick.Keybindings.Parse
   , parseBindingList
   , normalizeKey
 
-  , keybindingsFromIni
+  , keybindingsFromYaml
   , keybindingsFromFile
-  , keybindingIniParser
   )
 where
 
 import Control.Monad (forM)
 import Data.Maybe (catMaybes)
 import qualified Data.Text as T
-import qualified Data.Text.IO as T
+import qualified Data.ByteString as BS
 import qualified Graphics.Vty as Vty
 import Text.Read (readMaybe)
-import qualified Data.Ini.Config as Ini
+import qualified Data.Yaml as Yaml
+import Data.Yaml ((.:?))
+import Data.Aeson.Key (fromText)
+import Data.Aeson.Types (parseEither, withObject)
 
 import Brick.Keybindings.KeyEvents
 import Brick.Keybindings.KeyConfig
@@ -133,50 +135,59 @@ parseBinding s = go (T.splitOn "-" $ T.toLower s) []
                   Just i -> return (Vty.KFun i)
           | otherwise = Left ("Unknown keybinding: " ++ show t)
 
--- | Parse custom key bindings from the specified INI file using the
--- provided event name mapping.
+-- | Parse custom key bindings from YAML content using the provided
+-- event name mapping.
 --
--- Each line in the specified section can take the form
+-- The YAML document should contain the section name as a top-level key
+-- whose value is a mapping from event names to binding specifications:
 --
--- > <event-name> = <"unbound"|[binding,...]>
+-- > section-name:
+-- >   event-name: "binding1,binding2"
+-- >   other-event: unbound
 --
--- where the event name must be a valid event name in the specified
--- 'KeyEvents' and each binding is valid as parsed by 'parseBinding'.
+-- where each event name must be valid in the specified 'KeyEvents' and
+-- each binding is valid as parsed by 'parseBinding'.
 --
 -- Returns @Nothing@ if the named section was not found; otherwise
 -- returns a (possibly empty) list of binding states for each event in
 -- @evs@.
-keybindingsFromIni :: KeyEvents k
-                   -- ^ The key event name mapping to use to parse the
-                   -- configuration data.
-                   -> T.Text
-                   -- ^ The name of the INI configuration section to
-                   -- read.
-                   -> T.Text
-                   -- ^ The text of the INI document to read.
-                   -> Either String (Maybe [(k, BindingState)])
-keybindingsFromIni evs section doc =
-    Ini.parseIniFile doc (keybindingIniParser evs section)
+keybindingsFromYaml :: KeyEvents k
+                    -- ^ The key event name mapping to use to parse the
+                    -- configuration data.
+                    -> T.Text
+                    -- ^ The name of the YAML section to read.
+                    -> BS.ByteString
+                    -- ^ The YAML document bytes to parse.
+                    -> Either String (Maybe [(k, BindingState)])
+keybindingsFromYaml evs section bs = do
+    val <- either (Left . Yaml.prettyPrintParseException) Right (Yaml.decodeEither' bs)
+    parseEither (keybindingYamlParser evs section) val
 
--- | Parse custom key bindings from the specified INI file path. This
+keybindingYamlParser :: KeyEvents k -> T.Text -> Yaml.Value -> Yaml.Parser (Maybe [(k, BindingState)])
+keybindingYamlParser evs section = withObject "keybindings document" $ \obj -> do
+    mSectionVal <- obj .:? fromText section
+    case mSectionVal of
+        Nothing         -> return Nothing
+        Just sectionVal -> fmap Just $ withObject "keybindings section" (\sectionObj ->
+            fmap catMaybes $ forM (keyEventsList evs) $ \(name, e) -> do
+                mBinding <- (sectionObj .:? fromText name) :: Yaml.Parser (Maybe T.Text)
+                case mBinding of
+                    Nothing   -> return Nothing
+                    Just text -> case parseBindingList text of
+                        Left err -> fail err
+                        Right bs' -> return $ Just (e, bs')
+            ) sectionVal
+
+-- | Parse custom key bindings from the specified YAML file path. This
 -- does not catch or convert any exceptions resulting from I/O errors.
--- See 'keybindingsFromIni' for details.
+-- See 'keybindingsFromYaml' for details.
 keybindingsFromFile :: KeyEvents k
                     -- ^ The key event name mapping to use to parse the
                     -- configuration data.
                     -> T.Text
-                    -- ^ The name of the INI configuration section to
-                    -- read.
+                    -- ^ The name of the YAML section to read.
                     -> FilePath
-                    -- ^ The path to the INI file to read.
+                    -- ^ The path to the YAML file to read.
                     -> IO (Either String (Maybe [(k, BindingState)]))
 keybindingsFromFile evs section path =
-    keybindingsFromIni evs section <$> T.readFile path
-
--- | The low-level INI parser for custom key bindings used by this
--- module, exported for applications that use the @config-ini@ package.
-keybindingIniParser :: KeyEvents k -> T.Text -> Ini.IniParser (Maybe [(k, BindingState)])
-keybindingIniParser evs section =
-    Ini.sectionMb section $ do
-        fmap catMaybes $ forM (keyEventsList evs) $ \(name, e) -> do
-            fmap (e,) <$> Ini.fieldMbOf name parseBindingList
+    keybindingsFromYaml evs section <$> BS.readFile path

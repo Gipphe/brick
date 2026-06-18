@@ -55,7 +55,7 @@ extra-doc-files:     README.md,
                      docs/guide.rst,
                      docs/snake-demo.gif,
                      CHANGELOG.md,
-                     programs/custom_keys.ini
+                     programs/custom_keys.yaml
 
 Source-Repository head
   type:     git
@@ -121,7 +121,8 @@ library
                        microlens-th,
                        microlens-mtl,
                        mtl,
-                       config-ini,
+                       yaml,
+                       aeson,
                        vector,
                        stm >= 2.4.3,
                        text,

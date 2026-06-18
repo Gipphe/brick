@@ -4,16 +4,16 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE TemplateHaskell #-}
 -- | Support for representing attribute themes and loading and saving
--- theme customizations in INI-style files.
+-- theme customizations in YAML files.
 --
--- Customization files are INI-style files with two sections, both
--- optional: @"default"@ and @"other"@.
+-- Customization files are YAML files with two optional top-level keys:
+-- @"default"@ and @"other"@.
 --
--- The @"default"@ section specifies three optional fields:
+-- The @"default"@ key's value is a mapping with three optional fields:
 --
---  * @"default.fg"@ - a color specification
---  * @"default.bg"@ - a color specification
---  * @"default.style"@ - a style specification
+--  * @"fg"@ - a color specification
+--  * @"bg"@ - a color specification
+--  * @"style"@ - a style specification
 --
 -- A color specification can be any of the strings @black@, @red@,
 -- @green@, @yellow@, @blue@, @magenta@, @cyan@, @white@, @brightBlack@,
@@ -31,25 +31,28 @@
 -- @underline@, @reverseVideo@, @blink@, @dim@, @italic@,
 -- @strikethrough@, and @bold@.
 --
--- The @other@ section specifies for each attribute name in the theme
--- the same @fg@, @bg@, and @style@ settings as for the default
--- attribute. Furthermore, if an attribute name has multiple components,
--- the fields in the INI file should use periods as delimiters. For
--- example, if a theme has an attribute name (@attrName "foo" <> attrName "bar"@), then
--- the file may specify three fields:
---
---  * @foo.bar.fg@ - a color specification
---  * @foo.bar.bg@ - a color specification
---  * @foo.bar.style@ - a style specification
+-- The @other@ key's value is a mapping from attribute names to their
+-- @fg@, @bg@, and @style@ fields. Attribute names with multiple
+-- components (e.g. @attr1 <> attr2@) are represented by joining the
+-- components with a dot. For example, the attribute name
+-- @attrName "list" <> attrName "selected"@ is represented as the key
+-- @"list.selected"@.
 --
 -- Any color or style specifications omitted from the file mean that
 -- those attribute or style settings will use the theme's default value
 -- instead.
 --
--- Attribute names with multiple components (e.g. @attr1 <> attr2@) can
--- be referenced in customization files by separating the names with
--- a dot. For example, the attribute name @attrName "list" <> attrName "selected"@ can be
--- referenced by using the string "list.selected".
+-- Example customization file:
+--
+-- > default:
+-- >   fg: red
+-- >   style: bold
+-- >
+-- > other:
+-- >   list.selected:
+-- >     fg: brightWhite
+-- >     bg: blue
+-- >     style: "[bold,underline]"
 module Brick.Themes
   ( CustomAttr(..)
   , customFgL
@@ -81,7 +84,6 @@ import Control.Monad (forM, join)
 import Control.Applicative ((<|>))
 import qualified Data.Text as T
 import qualified Data.Text.Read as T
-import qualified Data.Text.IO as T
 import qualified Data.Map as M
 import qualified Data.Semigroup as Sem
 import Data.Tuple (swap)
@@ -93,7 +95,10 @@ import Data.Monoid ((<>))
 #endif
 import qualified Data.Foldable as F
 
-import Data.Ini.Config
+import qualified Data.Yaml as Yaml
+import Data.Yaml ((.=), object, Value, withObject, (.:?))
+import Data.Aeson.Key (fromText)
+import Data.Aeson.Types (parseEither, Parser)
 
 import Brick.AttrMap (AttrMap, AttrName, attrMap, attrNameComponents)
 import Brick.Types.TH (suffixLenses)
@@ -159,12 +164,6 @@ data Theme =
 suffixLenses ''CustomAttr
 suffixLenses ''Theme
 suffixLenses ''ThemeDocumentation
-
-defaultSectionName :: T.Text
-defaultSectionName = "default"
-
-otherSectionName :: T.Text
-otherSectionName = "other"
 
 -- | Create a new theme with the specified default attribute and
 -- attribute mapping. The theme will have no customizations.
@@ -282,23 +281,64 @@ parseStyle s =
                Nothing -> Left $ "Invalid style: " <> show stripped
                Just sty -> Right sty
 
-themeParser :: Theme -> IniParser (Maybe CustomAttr, M.Map AttrName CustomAttr)
-themeParser t = do
-    let parseCustomAttr basename = do
-          c <- CustomAttr <$> fieldMbOf (basename <> ".fg")    parseColor
-                          <*> fieldMbOf (basename <> ".bg")    parseColor
-                          <*> fieldMbOf (basename <> ".style") parseStyle
-          return $ if isNullCustomization c then Nothing else Just c
+parseCustomAttrYaml :: Value -> Parser (Maybe CustomAttr)
+parseCustomAttrYaml = withObject "attribute customization" $ \obj -> do
+    mFg  <- (obj .:? "fg")    :: Parser (Maybe T.Text)
+    mBg  <- (obj .:? "bg")    :: Parser (Maybe T.Text)
+    mSty <- (obj .:? "style") :: Parser (Maybe T.Text)
+    fg  <- traverse (either fail return . parseColor) mFg
+    bg  <- traverse (either fail return . parseColor) mBg
+    sty <- traverse (either fail return . parseStyle) mSty
+    let c = CustomAttr fg bg sty
+    return $ if isNullCustomization c then Nothing else Just c
 
-    defCustom <- sectionMb defaultSectionName $ do
-        parseCustomAttr "default"
+parseThemeYaml :: Theme -> Value -> Either String (Maybe CustomAttr, M.Map AttrName CustomAttr)
+parseThemeYaml t = parseEither $ withObject "theme customization" $ \obj -> do
+    mDefVal   <- obj .:? "default"
+    mOtherVal <- obj .:? "other"
+    defCustom <- join <$> traverse parseCustomAttrYaml mDefVal
+    otherMap  <- case mOtherVal of
+        Nothing       -> return M.empty
+        Just otherVal -> withObject "other section" (\otherObj -> do
+            pairs <- forM (M.keys $ themeDefaultMapping t) $ \an -> do
+                let key = fromText $ makeFieldName $ attrNameComponents an
+                mVal <- otherObj .:? key
+                case mVal of
+                    Nothing -> return Nothing
+                    Just v  -> fmap (an,) <$> parseCustomAttrYaml v
+            return $ M.fromList $ catMaybes pairs
+            ) otherVal
+    return (defCustom, otherMap)
 
-    customMap <- sectionMb otherSectionName $ do
-        catMaybes <$> (forM (M.keys $ themeDefaultMapping t) $ \an ->
-            (fmap (an,)) <$> parseCustomAttr (makeFieldName $ attrNameComponents an)
-            )
+styleToText :: Style -> T.Text
+styleToText s =
+    let activeStyles = filter (\(_, a) -> a .&. s == a) allStyles
+    in case activeStyles of
+        [(name, _)] -> name
+        many        -> "[" <> T.intercalate ", " (fst <$> many) <> "]"
 
-    return (join defCustom, M.fromList $ fromMaybe [] customMap)
+colorToText :: MaybeDefault Color -> T.Text
+colorToText Default      = "default"
+colorToText (SetTo c)    = vtyColorName c
+colorToText KeepCurrent  = error "colorToText: KeepCurrent not supported"
+
+customAttrToMap :: CustomAttr -> M.Map T.Text T.Text
+customAttrToMap c = M.fromList $ catMaybes
+    [ fmap ("fg",)    (colorToText <$> customFg c)
+    , fmap ("bg",)    (colorToText <$> customBg c)
+    , fmap ("style",) (styleToText <$> customStyle c)
+    ]
+
+buildThemeYaml :: Maybe CustomAttr -> M.Map AttrName CustomAttr -> Value
+buildThemeYaml mDefCustom otherMap =
+    let otherMapT = M.fromList
+            [ (makeFieldName $ attrNameComponents an, customAttrToMap c)
+            | (an, c) <- M.toList otherMap
+            ]
+    in object $ catMaybes
+        [ fmap (\c -> "default" .= customAttrToMap c) mDefCustom
+        , Just $ "other" .= otherMapT
+        ]
 
 -- | Apply customizations using a custom lookup function. Customizations
 -- are obtained for each attribute name in the theme. Any customizations
@@ -321,17 +361,19 @@ applyCustomizations customDefAttr lookupAttr t =
          , themeCustomMapping = customMap
          }
 
--- | Load an INI file containing theme customizations. Use the specified
+-- | Load a YAML file containing theme customizations. Use the specified
 -- theme to determine which customizations to load. Return the specified
 -- theme with customizations set. See the module documentation for the
 -- theme file format.
 loadCustomizations :: FilePath -> Theme -> IO (Either String Theme)
 loadCustomizations path t = do
-    content <- T.readFile path
-    case parseIniFile content (themeParser t) of
-        Left e -> return $ Left e
-        Right (customDef, customMap) ->
-            return $ Right $ applyCustomizations customDef (flip M.lookup customMap) t
+    result <- (Yaml.decodeFileEither path :: IO (Either Yaml.ParseException Value))
+    return $ case result of
+        Left e  -> Left (Yaml.prettyPrintParseException e)
+        Right v -> case parseThemeYaml t v of
+            Left e               -> Left e
+            Right (customDef, customMap) ->
+                Right $ applyCustomizations customDef (flip M.lookup customMap) t
 
 vtyColorName :: Color -> T.Text
 vtyColorName c@(Color240 n) = case color240CodeToRGB (fromIntegral n) of
@@ -344,61 +386,26 @@ vtyColorName c =
 makeFieldName :: [String] -> T.Text
 makeFieldName cs = T.pack $ intercalate "." cs
 
-serializeCustomColor :: [String] -> MaybeDefault Color -> T.Text
-serializeCustomColor cs cc =
-    let cName = case cc of
-          Default -> "default"
-          SetTo c -> vtyColorName c
-          KeepCurrent -> error "serializeCustomColor does not support KeepCurrent"
-    in makeFieldName cs <> " = " <> cName
-
-serializeCustomStyle :: [String] -> Style -> T.Text
-serializeCustomStyle cs s =
-    let activeStyles = filter (\(_, a) -> a .&. s == a) allStyles
-        styleStr = case activeStyles of
-            [(single, _)] -> single
-            many -> "[" <> (T.intercalate ", " $ fst <$> many) <> "]"
-    in makeFieldName cs <> " = " <> styleStr
-
-serializeCustomAttr :: [String] -> CustomAttr -> [T.Text]
-serializeCustomAttr cs c =
-    catMaybes [ serializeCustomColor (cs <> ["fg"]) <$> customFg c
-              , serializeCustomColor (cs <> ["bg"]) <$> customBg c
-              , serializeCustomStyle (cs <> ["style"]) <$> customStyle c
-              ]
-
-emitSection :: T.Text -> [T.Text] -> [T.Text]
-emitSection _ [] = []
-emitSection secName ls = ("[" <> secName <> "]") : ls
-
--- | Save an INI file containing theme customizations. Use the specified
+-- | Save a YAML file containing theme customizations. Use the specified
 -- theme to determine which customizations to save. See the module
 -- documentation for the theme file format.
 saveCustomizations :: FilePath -> Theme -> IO ()
-saveCustomizations path t = do
-    let defSection = fromMaybe [] $
-                     serializeCustomAttr ["default"] <$> themeCustomDefaultAttr t
-        mapSection = concat $ flip map (M.keys $ themeDefaultMapping t) $ \an ->
-            maybe [] (serializeCustomAttr (attrNameComponents an)) $
-                     M.lookup an $ themeCustomMapping t
-        content = T.unlines $ (emitSection defaultSectionName defSection) <>
-                              (emitSection otherSectionName mapSection)
-    T.writeFile path content
+saveCustomizations path t =
+    Yaml.encodeFile path $ buildThemeYaml
+        (themeCustomDefaultAttr t)
+        (themeCustomMapping t)
 
--- | Save an INI file containing all attributes from the specified
+-- | Save a YAML file containing all attributes from the specified
 -- theme. Customized attributes are saved, but if an attribute is not
 -- customized, its default is saved instead. The file can later be
 -- re-loaded as a customization file.
 saveTheme :: FilePath -> Theme -> IO ()
-saveTheme path t = do
-    let defSection = serializeCustomAttr ["default"] $
-                     fromMaybe (attrToCustom $ themeDefaultAttr t) (themeCustomDefaultAttr t)
-        mapSection = concat $ flip map (M.toList $ themeDefaultMapping t) $ \(an, def) ->
-            serializeCustomAttr (attrNameComponents an) $
-                fromMaybe (attrToCustom def) (M.lookup an $ themeCustomMapping t)
-        content = T.unlines $ (emitSection defaultSectionName defSection) <>
-                              (emitSection otherSectionName mapSection)
-    T.writeFile path content
+saveTheme path t =
+    let defCustom = fromMaybe (attrToCustom $ themeDefaultAttr t) (themeCustomDefaultAttr t)
+        otherMap  = M.mapWithKey (\an def ->
+            fromMaybe (attrToCustom def) (M.lookup an $ themeCustomMapping t))
+            (themeDefaultMapping t)
+    in Yaml.encodeFile path $ buildThemeYaml (Just defCustom) otherMap
 
 attrToCustom :: Attr -> CustomAttr
 attrToCustom a =
